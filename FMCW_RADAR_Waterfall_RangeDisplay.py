@@ -496,14 +496,17 @@ def update():
     else:
         peak_idx = len(s_dbfs) // 2
 
-    # Calculate range more accurately
+    # Apply calibration offset and calculate range
+    corrected_freq = freq - freq_offset
+    corrected_dist = (corrected_freq - signal_freq) * c / (2 * slope)
+
     if plot_dist:
-        if peak_idx < len(dist):
-            peak_range = dist[int(peak_idx)]
+        if peak_idx < len(corrected_dist):
+            peak_range = corrected_dist[int(peak_idx)]
         else:
             peak_range = 0
     else:
-        peak_freq = freq[int(peak_idx)]
+        peak_freq = corrected_freq[int(peak_idx)]
         beat_freq = abs(peak_freq - signal_freq)
         peak_range = beat_freq * c / (2 * slope)
 
@@ -525,10 +528,10 @@ def update():
 
     # Update plots
     if plot_dist:
-        win.fft_curve.setData(dist, s_dbfs)
+        win.fft_curve.setData(corrected_dist, s_dbfs)
         win.fft_plot.setLabel("bottom", text="Distance", units="m", **label_style)
     else:
-        win.fft_curve.setData(freq, s_dbfs)
+        win.fft_curve.setData(corrected_freq, s_dbfs)
         win.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
 
     # Update waterfall
@@ -584,6 +587,8 @@ def optimize_radar_config():
 
     print("Radar configuration optimized for close-range measurements")
 
+
+calibrate_system()
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
