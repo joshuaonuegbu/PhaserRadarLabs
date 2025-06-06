@@ -168,7 +168,12 @@ c = 3e8
 default_chirp_bw = 500e6
 N_frame = fft_size
 freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-slope = BW / ramp_time_s
+# For triangular ramps, the PLL spends half of the programmed
+# ramp time on the up-chirp and the other half on the down-chirp.
+# The beat frequency is produced during a single up (or down) sweep,
+# so the effective slope of one sweep is 2*BW divided by the total
+# ramp period.
+slope = 2 * BW / ramp_time_s
 dist = (freq - signal_freq) * c / (2 * slope)
 
 plot_dist = False
@@ -401,7 +406,8 @@ class Window(QMainWindow):
 		"""
         global dist, slope, signal_freq, plot_freq
         bw = self.bw_slider.value() * 1e6
-        slope = bw / ramp_time_s
+        # Adjust slope for triangular ramps as above
+        slope = 2 * bw / ramp_time_s
         dist = (freq - signal_freq) * c / (2 * slope)
         if self.x_axis_check.isChecked() == True:
             plot_dist = True
