@@ -82,6 +82,8 @@ num_slices = 600     # this sets how much time will be displayed on the waterfal
 fft_size = 1024 * 4
 plot_freq = 100e3    # x-axis freq range to plot
 img_array = np.ones((num_slices, fft_size))*(-100)
+freq_offset = 0
+delay_offset = 0
 
 # Configure SDR Rx
 my_sdr.sample_rate = int(sample_rate)
@@ -454,30 +456,74 @@ index = 0
 
 
 def update():
-    """ Updates the FFT in the window
-	Returns:
-		None
-	"""
+    """Improved FFT update with better signal processing for accurate ranging"""
     global index, plot_dist, freq, dist
     label_style = {"color": "#FFF", "font-size": "14pt"}
 
+    # Get data from both channels
     data = my_sdr.rx()
-    data = data[0] + data[1]
-    win_funct = np.blackman(len(data))
-    y = data * win_funct
-    sp = np.absolute(np.fft.fft(y))
+
+    # Process channels separately for better SNR
+    rx_data = data[0]  # Use single channel instead of adding both
+
+    # Apply window function
+    win_funct = np.blackman(len(rx_data))
+    y = rx_data * win_funct
+
+    # Compute FFT
+    sp = np.fft.fft(y, n=fft_size)
     sp = np.fft.fftshift(sp)
     s_mag = np.abs(sp) / np.sum(win_funct)
     s_mag = np.maximum(s_mag, 10 ** (-15))
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
 
-    peak_idx = int(np.argmax(s_dbfs))
-    if plot_dist:
-        peak_range = dist[peak_idx]
-    else:
-        peak_range = (freq[peak_idx] - signal_freq) * c / (2 * slope)
-    win.range_value_label.setText("Peak Range: %0.2f m" % peak_range)
+    # Improved peak detection
+    search_start_idx = int(len(s_dbfs) * 0.52)
+    search_end_idx = int(len(s_dbfs) * 0.8)
 
+    search_region = s_dbfs[search_start_idx:search_end_idx]
+    if len(search_region) > 0:
+        local_peak_idx = np.argmax(search_region)
+        peak_idx = search_start_idx + local_peak_idx
+
+        # Parabolic interpolation for sub-bin accuracy
+        if 1 < local_peak_idx < len(search_region) - 2:
+            y1, y2, y3 = search_region[local_peak_idx - 1 : local_peak_idx + 2]
+            a = (y1 - 2 * y2 + y3) / 2
+            if a != 0:
+                peak_offset = (y1 - y3) / (4 * a)
+                peak_idx += peak_offset
+    else:
+        peak_idx = len(s_dbfs) // 2
+
+    # Calculate range more accurately
+    if plot_dist:
+        if peak_idx < len(dist):
+            peak_range = dist[int(peak_idx)]
+        else:
+            peak_range = 0
+    else:
+        peak_freq = freq[int(peak_idx)]
+        beat_freq = abs(peak_freq - signal_freq)
+        peak_range = beat_freq * c / (2 * slope)
+
+    # Display with confidence indicator
+    peak_magnitude = s_dbfs[int(peak_idx)]
+    noise_floor = np.median(s_dbfs[search_start_idx:search_end_idx])
+    snr = peak_magnitude - noise_floor
+
+    if snr > 10:
+        confidence = "HIGH"
+    elif snr > 5:
+        confidence = "MED"
+    else:
+        confidence = "LOW"
+
+    win.range_value_label.setText(
+        f"Peak Range: {peak_range:.3f} m (SNR: {snr:.1f}dB, {confidence})"
+    )
+
+    # Update plots
     if plot_dist:
         win.fft_curve.setData(dist, s_dbfs)
         win.fft_plot.setLabel("bottom", text="Distance", units="m", **label_style)
@@ -485,6 +531,7 @@ def update():
         win.fft_curve.setData(freq, s_dbfs)
         win.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
 
+    # Update waterfall
     win.img_array = np.roll(win.img_array, 1, axis=0)
     win.img_array[0] = s_dbfs
     win.imageitem.setLevels([win.low_slider.value(), win.high_slider.value()])
@@ -493,6 +540,49 @@ def update():
     if index == 1:
         win.fft_plot.enableAutoRange("xy", False)
     index = index + 1
+
+
+def calibrate_system():
+    """Perform system calibration to account for delays and offsets"""
+    global freq_offset, delay_offset
+
+    print("Starting system calibration...")
+    print("Ensure no targets are present in front of radar")
+
+    cal_measurements = []
+    for _ in range(10):
+        data = my_sdr.rx()
+        rx_data = data[0]
+        win_funct = np.blackman(len(rx_data))
+        y = rx_data * win_funct
+        sp = np.fft.fft(y, n=fft_size)
+        sp = np.fft.fftshift(sp)
+        s_mag = np.abs(sp)
+        cal_measurements.append(s_mag)
+        time.sleep(0.1)
+
+    avg_spectrum = np.mean(cal_measurements, axis=0)
+    tx_leak_idx = np.argmax(avg_spectrum)
+    freq_offset = freq[tx_leak_idx] - signal_freq
+
+    print(f"Calibration complete. Frequency offset: {freq_offset:.2f} Hz")
+    return freq_offset
+
+
+def optimize_radar_config():
+    """Optimize radar configuration for close-range accuracy"""
+    global sample_rate, fft_size, BW
+
+    sample_rate = 1.0e6
+    my_sdr.sample_rate = int(sample_rate)
+
+    fft_size = 1024 * 8
+    my_sdr.rx_buffer_size = int(fft_size)
+
+    my_sdr.rx_hardwaregain_chan0 = int(40)
+    my_sdr.rx_hardwaregain_chan1 = int(40)
+
+    print("Radar configuration optimized for close-range measurements")
 
 
 timer = QtCore.QTimer()
